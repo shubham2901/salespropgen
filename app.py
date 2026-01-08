@@ -112,8 +112,23 @@ if "company_data" not in st.session_state:
 if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = ["Company_Overview.pdf", "Pricing_Tier_2025.pptx"]
 
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = "main"  # or "email_view" or "chat_view"
+
+if "company_emails" not in st.session_state:
+    st.session_state.company_emails = []
+
+if "company_chats" not in st.session_state:
+    st.session_state.company_chats = []
+
+if "show_send_modal" not in st.session_state:
+    st.session_state.show_send_modal = False
+
+if "selected_recipients" not in st.session_state:
+    st.session_state.selected_recipients = []
+
 # Helper Functions
-def research_company(name):
+def research_company(name, emails=None, chats=None):
     """Research company using Tavily and generate proposal content using the new Gemini SDK."""
     try:
         tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
@@ -124,16 +139,40 @@ def research_company(name):
         search_query = f"{name} strategic goals 2025 financial challenges recent news"
         search_result = tavily.search(query=search_query, search_depth="advanced")
         context = search_result.get("results", [])
+        
+        # 2. Format emails for context
+        email_context = ""
+        if emails:
+            email_summaries = []
+            for e in emails[:5]:  # Use up to 5 emails
+                email_summaries.append(f"From {e['sender']} ({e['date']}): {e['subject']}\n{e['body'][:300]}...")
+            email_context = "\n\n".join(email_summaries)
+        else:
+            email_context = MOCK_EMAIL
+        
+        # 3. Format Teams chat for context
+        chat_context = ""
+        if chats and len(chats) > 0:
+            chat = chats[0]
+            chat_messages = []
+            for m in chat['messages']:
+                chat_messages.append(f"{m['sender']} ({m['timestamp']}): {m['content']}")
+            chat_context = "\n".join(chat_messages)
+        else:
+            chat_context = MOCK_TRANSCRIPT
 
-        # 2. Generate Content with Gemini
+        # 4. Generate Content with Gemini
         logger.info(f"Generating proposal for {name} using Gemini (gemini-2.0-flash)...")
         prompt = f"""
         You are writing a sales proposal from 'NexusCRM' (a CRM software company) to {name}.
         
         Context gathered:
         - Web Research: {json.dumps(context)}
-        - Email from prospect: {MOCK_EMAIL}
-        - Teams Meeting Notes: {MOCK_TRANSCRIPT}
+        - Recent Email Communications:
+{email_context}
+        
+        - Teams Discussion:
+{chat_context}
         
         Based on this information, draft a sales proposal with 3 distinct sections.
         The values for each key MUST be a plain string (markdown formatted), NOT a nested JSON object.
@@ -175,6 +214,47 @@ def research_company(name):
             "solution": "Check your .env for Tavily/Gemini API keys.",
             "pricing": "Internal Error."
         }
+
+def extract_contacts(emails, chats):
+    """Extract unique contacts from emails and Teams chats."""
+    contacts = []
+    
+    # Extract from emails
+    for email in emails:
+        sender = email['sender']
+        # Parse email to get name and address
+        if '@' in sender:
+            name_part = sender.split('@')[0].replace('.', ' ').title()
+            contacts.append({
+                'email': sender,
+                'name': name_part,
+                'source': 'Email'
+            })
+    
+    # Extract from Teams chat participants
+    if chats:
+        for chat in chats:
+            for participant in chat.get('participants', []):
+                # Extract name from "Name (Role)" format
+                name = participant.split('(')[0].strip()
+                # Generate email from name
+                email_name = name.lower().replace(' ', '.')
+                company_domain = st.session_state.company_data.get('name', 'company').lower().replace(' ', '').replace(',', '')
+                contacts.append({
+                    'email': f"{email_name}@{company_domain}.com",
+                    'name': name,
+                    'source': 'Teams Chat'
+                })
+    
+    # Remove duplicates based on email
+    seen = set()
+    unique_contacts = []
+    for contact in contacts:
+        if contact['email'] not in seen:
+            seen.add(contact['email'])
+            unique_contacts.append(contact)
+    
+    return unique_contacts
 
 def get_theme_update(user_suggestion, current_theme):
     """Use Gemini to translate a theme suggestion into RGB values."""
@@ -285,10 +365,26 @@ chat_col, right_panel = st.columns([0.7, 0.3])
 with right_panel:
     st.markdown('<div class="right-panel">', unsafe_allow_html=True)
     
-    # Tools Section
-    st.markdown("### Tools")
-    st.success("✅ Outlook - Active")
-    st.success("✅ Teams - Active")
+    # Tools Section - Show discovery results if company is searched
+    st.markdown("### Context & Tools")
+    
+    if st.session_state.company_data.get("name"):
+        # Show discovery results
+        company_name = st.session_state.company_data["name"]
+        
+        st.success(f"📧 {len(st.session_state.company_emails)} emails found")
+        if st.button("View Emails", key="view_emails_btn", use_container_width=True):
+            st.session_state.view_mode = "email_view"
+            st.rerun()
+        
+        st.success(f"💬 {len(st.session_state.company_chats)} group chat found")
+        if st.button("View Chat", key="view_chat_btn", use_container_width=True):
+            st.session_state.view_mode = "chat_view"
+            st.rerun()
+    else:
+        # Default state before search
+        st.info("✅ Outlook - Active")
+        st.info("✅ Teams - Active")
     
     st.markdown("---")
     
@@ -312,7 +408,52 @@ with right_panel:
 
 # ===== CHAT COLUMN =====
 with chat_col:
-    st.title("🤖 NexusCRM Sales Proposal Copilot")
+    # Conditional rendering based on view_mode
+    if st.session_state.view_mode == "email_view":
+        # EMAIL LIST VIEW
+        st.title(f"📧 Emails about {st.session_state.company_data['name']}")
+        
+        if st.button("← Back to Proposal", key="back_from_emails"):
+            st.session_state.view_mode = "main"
+            st.rerun()
+        
+        st.markdown("---")
+        
+        if st.session_state.company_emails:
+            for i, email in enumerate(st.session_state.company_emails):
+                with st.expander(f"📨 {email['subject']} - {email['sender']}", expanded=(i==0)):
+                    st.markdown(f"**From:** {email['sender']}")
+                    st.markdown(f"**Date:** {email['date']}")
+                    st.markdown(f"**Subject:** {email['subject']}")
+                    st.markdown("---")
+                    st.markdown(email['body'])
+        else:
+            st.info("No emails found for this company.")
+    
+    elif st.session_state.view_mode == "chat_view":
+        # TEAMS CHAT VIEW
+        if st.session_state.company_chats:
+            chat = st.session_state.company_chats[0]
+            st.title(f"💬 {chat['title']}")
+            
+            if st.button("← Back to Proposal", key="back_from_chat"):
+                st.session_state.view_mode = "main"
+                st.rerun()
+            
+            st.markdown("---")
+            st.markdown(f"**Participants:** {', '.join(chat['participants'])}")
+            st.markdown("---")
+            
+            for msg in chat['messages']:
+                st.markdown(f"**{msg['sender']}** - *{msg['timestamp']}*")
+                st.markdown(msg['content'])
+                st.markdown("")
+        else:
+            st.info("No group chats found for this company.")
+    
+    else:
+        # MAIN PROPOSAL VIEW
+        st.title("🤖 NexusCRM Sales Proposal Copilot")
     st.markdown("---")
     
     # Display chat messages
@@ -333,7 +474,9 @@ with chat_col:
                         key=f"full_draft_{message.get('id', 0)}"
                     )
                     
-                    if st.button("Generate PPT", key=f"confirm_{message.get('id', 0)}"):
+                    col1, col2 = st.columns(2)
+                    
+                    if col1.button("✨ Generate PPT", key=f"confirm_{message.get('id', 0)}", use_container_width=True):
                         st.session_state.messages.append({
                             "role": "assistant",
                             "content": "Generating your PowerPoint presentation...",
@@ -341,6 +484,73 @@ with chat_col:
                             "id": len(st.session_state.messages)
                         })
                         st.rerun()
+                    
+                    if col2.button("📧 Send Proposal", key=f"send_proposal_{message.get('id', 0)}", use_container_width=True):
+                        st.session_state.show_send_modal = True
+                        # Extract contacts and select all by default
+                        contacts = extract_contacts(
+                            st.session_state.company_emails,
+                            st.session_state.company_chats
+                        )
+                        st.session_state.selected_recipients = [c['email'] for c in contacts]
+                        st.rerun()
+                    
+                    # Show recipient selection modal
+                    if st.session_state.show_send_modal:
+                        st.markdown("---")
+                        st.markdown("### 📧 Select Recipients")
+                        st.caption("These contacts were found in emails and Teams chats")
+                        
+                        contacts = extract_contacts(
+                            st.session_state.company_emails,
+                            st.session_state.company_chats
+                        )
+                        
+                        # Display checkboxes for each contact
+                        for i, contact in enumerate(contacts):
+                            is_selected = contact['email'] in st.session_state.selected_recipients
+                            
+                            col_check, col_info = st.columns([0.1, 0.9])
+                            with col_check:
+                                checked = st.checkbox(
+                                    "", 
+                                    value=is_selected, 
+                                    key=f"checkbox_{contact['email']}_{message.get('id', 0)}"
+                                )
+                                # Update selection state
+                                if checked and contact['email'] not in st.session_state.selected_recipients:
+                                    st.session_state.selected_recipients.append(contact['email'])
+                                elif not checked and contact['email'] in st.session_state.selected_recipients:
+                                    st.session_state.selected_recipients.remove(contact['email'])
+                            
+                            with col_info:
+                                st.markdown(f"**{contact['name']}** - {contact['email']}")
+                                st.caption(f"Found in: {contact['source']}")
+                        
+                        st.markdown("---")
+                        
+                        # Action buttons
+                        btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+                        
+                        with btn_col1:
+                            if st.button("Cancel", key=f"cancel_send_{message.get('id', 0)}"):
+                                st.session_state.show_send_modal = False
+                                st.rerun()
+                        
+                        with btn_col3:
+                            selected_count = len(st.session_state.selected_recipients)
+                            if st.button(
+                                f"📤 Send to {selected_count} Selected", 
+                                key=f"confirm_send_{message.get('id', 0)}", 
+                                type="primary",
+                                use_container_width=True,
+                                disabled=(selected_count == 0)
+                            ):
+                                # Simulate sending
+                                if st.session_state.selected_recipients:
+                                    st.success(f"✅ Proposal sent to {selected_count} recipients!")
+                                    st.session_state.show_send_modal = False
+                                    st.rerun()
                     
                     st.markdown('</div>', unsafe_allow_html=True)
             
@@ -419,12 +629,23 @@ with chat_col:
             company_name = spg_match.group(1).strip()
             st.session_state.company_data["name"] = company_name
             
+            # Generate contextual emails and chats
+            from email_generator import generate_emails
+            from teams_generator import generate_team_chat
+            
+            st.session_state.company_emails = generate_emails(company_name)
+            st.session_state.company_chats = [generate_team_chat(company_name)]
+            
             # Show thinking message
             with st.chat_message("assistant", avatar="https://upload.wikimedia.org/wikipedia/en/a/aa/Microsoft_Copilot_Icon.svg"):
                 # Status 1: Web Search
                 with st.spinner(f"🔍 Searching Web for {company_name}..."):
                     try:
-                        research_results = research_company(company_name)
+                        research_results = research_company(
+                            company_name,
+                            st.session_state.company_emails,
+                            st.session_state.company_chats
+                        )
                     except Exception as e:
                         st.error(f"Error during research: {e}")
                         research_results = {
@@ -435,8 +656,7 @@ with chat_col:
                 
                 # Status 2: Reading Emails & Teams
                 with st.spinner("📧 Reading Emails & Teams Logs..."):
-                    st.write(f"**Email Context:** {MOCK_EMAIL[:50]}...")
-                    st.write(f"**Teams Context:** {MOCK_TRANSCRIPT[:50]}...")
+                    st.write(f"**Found {len(st.session_state.company_emails)} emails and {len(st.session_state.company_chats)} group chat**")
                 
                 # Status 3: Analyzing Knowledge
                 with st.spinner("📂 Analyzing Knowledge Base..."):
