@@ -124,6 +124,15 @@ if "company_chats" not in st.session_state:
 if "show_send_modal" not in st.session_state:
     st.session_state.show_send_modal = False
 
+if "send_modal_message_id" not in st.session_state:
+    st.session_state.send_modal_message_id = None
+
+if "last_sent_recipients" not in st.session_state:
+    st.session_state.last_sent_recipients = []
+
+if "last_sent_message_id" not in st.session_state:
+    st.session_state.last_sent_message_id = None
+
 if "selected_recipients" not in st.session_state:
     st.session_state.selected_recipients = []
 
@@ -255,6 +264,68 @@ def extract_contacts(emails, chats):
             unique_contacts.append(contact)
     
     return unique_contacts
+
+def render_send_modal(message_id):
+    """Render the recipient selection modal for sending proposals."""
+    if not st.session_state.show_send_modal:
+        return
+    if st.session_state.send_modal_message_id != message_id:
+        return
+
+    st.markdown("---")
+    st.markdown("### 📧 Select Recipients")
+    st.caption("These contacts were found in emails and Teams chats")
+
+    contacts = extract_contacts(
+        st.session_state.company_emails,
+        st.session_state.company_chats
+    )
+
+    for i, contact in enumerate(contacts):
+        is_selected = contact['email'] in st.session_state.selected_recipients
+        
+        col_check, col_info = st.columns([0.1, 0.9])
+        with col_check:
+            checked = st.checkbox(
+                "", 
+                value=is_selected, 
+                key=f"checkbox_{contact['email']}_{message_id}"
+            )
+            if checked and contact['email'] not in st.session_state.selected_recipients:
+                st.session_state.selected_recipients.append(contact['email'])
+            elif not checked and contact['email'] in st.session_state.selected_recipients:
+                st.session_state.selected_recipients.remove(contact['email'])
+        
+        with col_info:
+            st.markdown(f"**{contact['name']}** - {contact['email']}")
+            st.caption(f"Found in: {contact['source']}")
+
+    st.markdown("---")
+
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+    
+    with btn_col1:
+        if st.button("Cancel", key=f"cancel_send_{message_id}"):
+            st.session_state.show_send_modal = False
+            st.session_state.send_modal_message_id = None
+            st.rerun()
+    
+    with btn_col3:
+        selected_count = len(st.session_state.selected_recipients)
+        if st.button(
+            f"📤 Send to {selected_count} Selected", 
+            key=f"confirm_send_{message_id}", 
+            type="primary",
+            use_container_width=True,
+            disabled=(selected_count == 0)
+        ):
+            if st.session_state.selected_recipients:
+                recipients = list(st.session_state.selected_recipients)
+                st.session_state.last_sent_recipients = recipients
+                st.session_state.last_sent_message_id = message_id
+                st.session_state.show_send_modal = False
+                st.session_state.send_modal_message_id = None
+                st.rerun()
 
 def get_theme_update(user_suggestion, current_theme):
     """Use Gemini to translate a theme suggestion into RGB values."""
@@ -474,9 +545,7 @@ with chat_col:
                         key=f"full_draft_{message.get('id', 0)}"
                     )
                     
-                    col1, col2 = st.columns(2)
-                    
-                    if col1.button("✨ Generate PPT", key=f"confirm_{message.get('id', 0)}", use_container_width=True):
+                    if st.button("✨ Generate PPT", key=f"confirm_{message.get('id', 0)}", use_container_width=True):
                         st.session_state.messages.append({
                             "role": "assistant",
                             "content": "Generating your PowerPoint presentation...",
@@ -485,73 +554,6 @@ with chat_col:
                         })
                         st.rerun()
                     
-                    if col2.button("📧 Send Proposal", key=f"send_proposal_{message.get('id', 0)}", use_container_width=True):
-                        st.session_state.show_send_modal = True
-                        # Extract contacts and select all by default
-                        contacts = extract_contacts(
-                            st.session_state.company_emails,
-                            st.session_state.company_chats
-                        )
-                        st.session_state.selected_recipients = [c['email'] for c in contacts]
-                        st.rerun()
-                    
-                    # Show recipient selection modal
-                    if st.session_state.show_send_modal:
-                        st.markdown("---")
-                        st.markdown("### 📧 Select Recipients")
-                        st.caption("These contacts were found in emails and Teams chats")
-                        
-                        contacts = extract_contacts(
-                            st.session_state.company_emails,
-                            st.session_state.company_chats
-                        )
-                        
-                        # Display checkboxes for each contact
-                        for i, contact in enumerate(contacts):
-                            is_selected = contact['email'] in st.session_state.selected_recipients
-                            
-                            col_check, col_info = st.columns([0.1, 0.9])
-                            with col_check:
-                                checked = st.checkbox(
-                                    "", 
-                                    value=is_selected, 
-                                    key=f"checkbox_{contact['email']}_{message.get('id', 0)}"
-                                )
-                                # Update selection state
-                                if checked and contact['email'] not in st.session_state.selected_recipients:
-                                    st.session_state.selected_recipients.append(contact['email'])
-                                elif not checked and contact['email'] in st.session_state.selected_recipients:
-                                    st.session_state.selected_recipients.remove(contact['email'])
-                            
-                            with col_info:
-                                st.markdown(f"**{contact['name']}** - {contact['email']}")
-                                st.caption(f"Found in: {contact['source']}")
-                        
-                        st.markdown("---")
-                        
-                        # Action buttons
-                        btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
-                        
-                        with btn_col1:
-                            if st.button("Cancel", key=f"cancel_send_{message.get('id', 0)}"):
-                                st.session_state.show_send_modal = False
-                                st.rerun()
-                        
-                        with btn_col3:
-                            selected_count = len(st.session_state.selected_recipients)
-                            if st.button(
-                                f"📤 Send to {selected_count} Selected", 
-                                key=f"confirm_send_{message.get('id', 0)}", 
-                                type="primary",
-                                use_container_width=True,
-                                disabled=(selected_count == 0)
-                            ):
-                                # Simulate sending
-                                if st.session_state.selected_recipients:
-                                    st.success(f"✅ Proposal sent to {selected_count} recipients!")
-                                    st.session_state.show_send_modal = False
-                                    st.rerun()
-                    
                     st.markdown('</div>', unsafe_allow_html=True)
             
             # Show download/preview button if this message has it
@@ -559,6 +561,13 @@ with chat_col:
                 with st.container():
                     st.markdown('<div class="draft-container">', unsafe_allow_html=True)
                     st.subheader("PPT Preview & Customization")
+
+                    if (
+                        st.session_state.last_sent_message_id == message.get('id', 0)
+                        and st.session_state.last_sent_recipients
+                    ):
+                        sent_list = ", ".join(st.session_state.last_sent_recipients)
+                        st.success(f"✅ Proposal sent to: {sent_list}")
                     
                     # PPT Viewer Simulation
                     tabs = st.tabs(["Slide 1", "Slide 2", "Slide 3", "Slide 4"])
@@ -594,26 +603,42 @@ with chat_col:
                     st.markdown("---")
                     theme_suggestion = st.text_input("🎨 Suggest your theme changes", placeholder="e.g. Dark mode with gold accents", key=f"theme_input_{message.get('id', 0)}")
                     
-                    col1, col2 = st.columns(2)
-                    if col1.button("🔄 Regenerate Theme", key=f"regen_{message.get('id', 0)}"):
+                    cta_regen, cta_download, cta_send = st.columns([0.8, 1.1, 1.1])
+                    if cta_regen.button("🔄 Regenerate Theme", key=f"regen_{message.get('id', 0)}", use_container_width=True):
                         if theme_suggestion:
                             with st.spinner("Applying theme changes..."):
                                 new_theme = get_theme_update(theme_suggestion, st.session_state.company_data["ppt_theme"])
                                 st.session_state.company_data["ppt_theme"] = new_theme
                                 st.rerun()
 
+                    pptx_path = None
                     try:
                         pptx_path = generate_pptx(st.session_state.company_data)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+                    if pptx_path:
                         with open(pptx_path, "rb") as f:
-                            col2.download_button(
+                            cta_download.download_button(
                                 "📥 Download Final (PPTX)",
                                 f,
                                 file_name=f"NexusCRM_Proposal_{st.session_state.company_data['name']}.pptx",
                                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                                key=f"download_{message.get('id', 0)}"
+                                key=f"download_{message.get('id', 0)}",
+                                use_container_width=True
                             )
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+
+                    if cta_send.button("📧 Send Proposal", key=f"send_proposal_preview_{message.get('id', 0)}", type="primary", use_container_width=True):
+                        st.session_state.show_send_modal = True
+                        st.session_state.send_modal_message_id = message.get('id', 0)
+                        contacts = extract_contacts(
+                            st.session_state.company_emails,
+                            st.session_state.company_chats
+                        )
+                        st.session_state.selected_recipients = [c['email'] for c in contacts]
+                        st.rerun()
+
+                    render_send_modal(message.get('id', 0))
                     
                     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -639,7 +664,7 @@ with chat_col:
             # Show thinking message
             with st.chat_message("assistant", avatar="https://upload.wikimedia.org/wikipedia/en/a/aa/Microsoft_Copilot_Icon.svg"):
                 # Status 1: Web Search
-                with st.spinner(f"🔍 Searching Web for {company_name}..."):
+                with st.spinner(f"🔍 Researcher: Searching Web, your emails and chats for details on {company_name}..."):
                     try:
                         research_results = research_company(
                             company_name,
